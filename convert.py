@@ -1,12 +1,15 @@
 from pathlib import Path
 import argparse
+import numpy as np
+
+np.bool = np.bool_
+
 import mxnet as mx
 from tqdm import tqdm
 from PIL import Image
 import bcolz
 import pickle
 import cv2
-import numpy as np
 from torchvision import transforms as trans
 import os
 import numbers

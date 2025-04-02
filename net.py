@@ -22,6 +22,8 @@ def build_model(model_name='ir_50'):
         return IR_34(input_size=(112,112))
     elif model_name == 'ir_18':
         return IR_18(input_size=(112,112))
+    elif model_name == 'resnet50_adaface':
+        return ResNetAdaFace()
     else:
         raise ValueError('not a correct model name', model_name)
 
@@ -411,4 +413,98 @@ def IR_SE_200(input_size):
     model = Backbone(input_size, 200, 'ir_se')
 
     return model
+
+
+class ResNetAdaFace(Module):
+    """ResNet50 backbone with adapter for AdaFace.
+    
+    This model uses a frozen ResNet50 backbone and adapts its features
+    to be compatible with AdaFace's architecture.
+    """
+    def __init__(self):
+        super(ResNetAdaFace, self).__init__()
+        
+        # Load pretrained ResNet50 and remove the classification head
+        import torchvision.models as models
+        resnet = models.resnet50(pretrained=True)
+        self.backbone = nn.Sequential(
+            resnet.conv1,
+            resnet.bn1,
+            resnet.relu,
+            resnet.maxpool,
+            resnet.layer1,
+            resnet.layer2,
+            resnet.layer3,
+            resnet.layer4
+        )
+        
+        # Freeze the backbone
+        for param in self.backbone.parameters():
+            param.requires_grad = False
+            
+        # Adapter network to convert ResNet features to AdaFace-compatible format
+        self.adapter = nn.Sequential(
+            # Initial channel reduction (2048 -> 512)
+            Conv2d(2048, 512, kernel_size=1),
+            BatchNorm2d(512),
+            PReLU(512),
+            
+            # Upsample to AdaFace input size (112x112)
+            nn.Upsample(size=(112, 112), mode='bilinear', align_corners=True),
+            
+            # Feature processing
+            Conv2d(512, 256, kernel_size=3, padding=1),
+            BatchNorm2d(256),
+            PReLU(256),
+            
+            Conv2d(256, 128, kernel_size=3, padding=1),
+            BatchNorm2d(128),
+            PReLU(128),
+            
+            # Final adaptation to match AdaFace feature dimensions
+            Conv2d(128, 512, kernel_size=3, padding=1),
+            BatchNorm2d(512),
+            PReLU(512)
+        )
+        
+        # Original AdaFace body and output layers
+        blocks = get_blocks(50)  # Using IR-50 architecture for consistency
+        if blocks is None:
+            raise ValueError('Invalid number of layers')
+            
+        unit_module = BasicBlockIR
+        output_channel = 512
+        
+        self.body = Sequential(*[
+            unit_module(bottleneck.in_channel, bottleneck.depth, bottleneck.stride)
+            for block in blocks
+            for bottleneck in block
+        ])
+        
+        self.output_layer = Sequential(
+            BatchNorm2d(output_channel),
+            Dropout(0.4),
+            Flatten(),
+            Linear(output_channel * 7 * 7, 512),
+            BatchNorm1d(512, affine=False)
+        )
+        
+        initialize_weights(self.modules())
+
+    def forward(self, x):
+        # Extract features with frozen ResNet backbone
+        x = self.backbone(x)
+        
+        # Adapt features to AdaFace format
+        x = self.adapter(x)
+        
+        # Process through AdaFace architecture
+        for idx, module in enumerate(self.body):
+            x = module(x)
+            
+        x = self.output_layer(x)
+        norm = torch.norm(x, 2, 1, True)
+        output = torch.div(x, norm)
+        
+        return output, norm
 
