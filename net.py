@@ -10,6 +10,7 @@ from torch.nn import ReLU, Sigmoid
 from torch.nn import Module
 from torch.nn import PReLU
 import os
+import torchvision.models as models
 
 def build_model(model_name='ir_50'):
     if model_name == 'ir_101':
@@ -419,13 +420,13 @@ class ResNetAdaFace(Module):
     """ResNet50 backbone with adapter for AdaFace.
     
     This model uses a frozen ResNet50 backbone and adapts its features
-    to be compatible with AdaFace's architecture.
+    to be compatible with AdaFace's architecture. It also loads pretrained
+    AdaFace weights for the body and output layers.
     """
-    def __init__(self):
+    def __init__(self, adaface_checkpoint='pretrained/adaface_ir50_ms1mv2.ckpt'):
         super(ResNetAdaFace, self).__init__()
         
         # Load pretrained ResNet50 and remove the classification head
-        import torchvision.models as models
         resnet = models.resnet50(pretrained=True)
         self.backbone = nn.Sequential(
             resnet.conv1,
@@ -452,22 +453,13 @@ class ResNetAdaFace(Module):
             # Upsample to AdaFace input size (112x112)
             nn.Upsample(size=(112, 112), mode='bilinear', align_corners=True),
             
-            # Feature processing
-            Conv2d(512, 256, kernel_size=3, padding=1),
-            BatchNorm2d(256),
-            PReLU(256),
-            
-            Conv2d(256, 128, kernel_size=3, padding=1),
-            BatchNorm2d(128),
-            PReLU(128),
-            
-            # Final adaptation to match AdaFace feature dimensions
-            Conv2d(128, 512, kernel_size=3, padding=1),
+            # Feature processing with residual connection
+            Conv2d(512, 512, kernel_size=3, padding=1),
             BatchNorm2d(512),
             PReLU(512)
         )
         
-        # Original AdaFace body and output layers
+        # Initialize AdaFace body and output layers
         blocks = get_blocks(50)  # Using IR-50 architecture for consistency
         if blocks is None:
             raise ValueError('Invalid number of layers')
@@ -489,7 +481,37 @@ class ResNetAdaFace(Module):
             BatchNorm1d(512, affine=False)
         )
         
-        initialize_weights(self.modules())
+        # Load pretrained AdaFace weights
+        if os.path.exists(adaface_checkpoint):
+            print(f"Loading pretrained AdaFace weights from {adaface_checkpoint}")
+            checkpoint = torch.load(adaface_checkpoint, weights_only=False)
+            if 'state_dict' in checkpoint:
+                state_dict = checkpoint['state_dict']
+            else:
+                state_dict = checkpoint
+                
+            # Remove 'module.' prefix if it exists
+            state_dict = {k.replace('module.', ''): v for k, v in state_dict.items()}
+            # Remove 'model.' prefix if it exists
+            state_dict = {k.replace('model.', ''): v for k, v in state_dict.items()}
+            
+            # # Filter out input layer weights since we're using our adapter
+            # filtered_state_dict = {k: v for k, v in state_dict.items() 
+            #                      if not k.startswith('input_layer')}
+            
+            # Load weights for body and output layer
+            body_state_dict = {k: v for k, v in state_dict.items() 
+                             if k.startswith(('body.', 'output_layer.'))}
+            
+            missing_keys = self.load_state_dict(body_state_dict, strict=False)
+            print("Loaded AdaFace weights. Missing keys:", missing_keys)
+
+        else:
+            print(f"Warning: AdaFace checkpoint not found at {adaface_checkpoint}")
+            raise
+            
+        # Initialize only the adapter weights
+        initialize_weights(self.adapter.modules())
 
     def forward(self, x):
         # Extract features with frozen ResNet backbone

@@ -1,7 +1,7 @@
 #!/bin/bash
 
 python main.py \
-    --data_root /home/william/datasets/dataset_folders/ \
+    --data_root /home/ubuntu/datasets/ \
     --train_data_path faces_emore \
     --val_data_path faces_emore \
     --prefix resnet50_adaface_ms1mv2 \
